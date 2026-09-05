@@ -1,6 +1,7 @@
 import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
+import html
 
 
 # ============================================================
@@ -47,10 +48,6 @@ def ensure_session():
 
 
 def set_supabase_session():
-    """
-    Restore the authenticated Supabase session after a Streamlit rerun.
-    """
-
     if (
         st.session_state.access_token
         and st.session_state.refresh_token
@@ -83,11 +80,6 @@ def sign_out():
 # ============================================================
 
 def relation_one(value):
-    """
-    Supabase/PostgREST normally returns a many-to-one relationship as
-    a dict, but this helper also tolerates a one-item list.
-    """
-
     if isinstance(value, dict):
         return value
 
@@ -98,11 +90,16 @@ def relation_one(value):
     return {}
 
 
-def render_artwork(artwork_url, large=False):
-    """
-    Render album artwork when available, otherwise show a placeholder.
-    """
+def truncate_text(text, max_chars):
+    text = text or ""
 
+    if len(text) <= max_chars:
+        return text
+
+    return text[: max_chars - 1].rstrip() + "…"
+
+
+def render_artwork(artwork_url, large=False):
     if artwork_url:
         st.image(
             artwork_url,
@@ -115,6 +112,7 @@ def render_artwork(artwork_url, large=False):
             f"""
             <div style="
                 aspect-ratio: 1 / 1;
+                width: 100%;
                 background-color: #2b2b2b;
                 display: flex;
                 align-items: center;
@@ -128,6 +126,131 @@ def render_artwork(artwork_url, large=False):
             """,
             unsafe_allow_html=True,
         )
+
+
+def render_album_card(
+    row,
+    reviewed_by_album,
+):
+    artwork_url = row.get("artwork_url")
+
+    artist_data = relation_one(
+        row.get("artists")
+    )
+
+    artist = (
+        artist_data.get("name")
+        or "Unknown artist"
+    )
+
+    title = (
+        row.get("title")
+        or "Untitled"
+    )
+
+    year = row.get("year")
+
+    review = reviewed_by_album.get(
+        row["album_id"]
+    )
+
+    # Fixed-height card shell for better grid alignment.
+    # Artwork is rendered above this text shell.
+    render_artwork(
+        artwork_url
+    )
+
+    safe_title = html.escape(
+        truncate_text(title, 42)
+    )
+
+    safe_artist = html.escape(
+        truncate_text(artist, 34)
+    )
+
+    year_text = (
+        html.escape(str(year))
+        if year
+        else "&nbsp;"
+    )
+
+    if (
+        review
+        and review.get("rating") is not None
+    ):
+        rating_text = (
+            f"Your rating: "
+            f"{review['rating']}/5"
+        )
+    else:
+        rating_text = "Not yet rated"
+
+    safe_rating = html.escape(
+        rating_text
+    )
+
+    st.markdown(
+        f"""
+        <div style="
+            min-height: 132px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            margin-bottom: 0.35rem;
+        ">
+            <div style="
+                min-height: 48px;
+                font-weight: 700;
+                line-height: 1.2;
+                font-size: 1rem;
+                margin-bottom: 0.25rem;
+            ">
+                {safe_title}
+            </div>
+
+            <div style="
+                min-height: 24px;
+                color: rgba(250,250,250,0.70);
+                font-size: 0.9rem;
+                line-height: 1.2;
+            ">
+                {safe_artist}
+            </div>
+
+            <div style="
+                min-height: 22px;
+                color: rgba(250,250,250,0.55);
+                font-size: 0.82rem;
+                line-height: 1.2;
+                margin-top: 0.10rem;
+            ">
+                {year_text}
+            </div>
+
+            <div style="
+                min-height: 22px;
+                color: rgba(250,250,250,0.65);
+                font-size: 0.82rem;
+                line-height: 1.2;
+                margin-top: 0.25rem;
+            ">
+                {safe_rating}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if st.button(
+        "Open",
+        key=f"open_{row['album_id']}",
+        use_container_width=True,
+    ):
+        st.session_state.selected_album_id = (
+            row["album_id"]
+        )
+
+        st.rerun()
 
 
 # ============================================================
@@ -287,10 +410,6 @@ def login_page():
 # ============================================================
 
 def get_all_albums():
-    """
-    Retrieve the full album library in pages.
-    """
-
     all_rows = []
 
     page_size = 1000
@@ -683,71 +802,36 @@ def album_browser():
         )
         return
 
+    # --------------------------------------------------------
+    # ROW-BY-ROW GRID
+    # --------------------------------------------------------
+
     columns_per_row = 4
-    columns = st.columns(columns_per_row)
 
-    for index, row in enumerate(rows):
-        column = columns[index % columns_per_row]
+    for start in range(
+        0,
+        len(rows),
+        columns_per_row,
+    ):
+        album_row = rows[
+            start:
+            start + columns_per_row
+        ]
 
-        with column:
-            render_artwork(
-                row.get("artwork_url")
-            )
+        columns = st.columns(
+            columns_per_row,
+            gap="medium",
+        )
 
-            artist_data = relation_one(
-                row.get("artists")
-            )
-
-            artist = (
-                artist_data.get("name")
-                or "Unknown artist"
-            )
-
-            title = (
-                row.get("title")
-                or "Untitled"
-            )
-
-            year = row.get("year")
-
-            st.markdown(
-                f"**{title}**"
-            )
-
-            detail = artist
-
-            if year:
-                detail += f" • {year}"
-
-            st.caption(detail)
-
-            review = reviewed_by_album.get(
-                row["album_id"]
-            )
-
-            if (
-                review
-                and review.get("rating") is not None
-            ):
-                st.caption(
-                    f"Your rating: "
-                    f"{review['rating']}/5"
+        for column, row in zip(
+            columns,
+            album_row,
+        ):
+            with column:
+                render_album_card(
+                    row,
+                    reviewed_by_album,
                 )
-            else:
-                st.caption(
-                    "Not yet rated"
-                )
-
-            if st.button(
-                "Open",
-                key=f"open_{row['album_id']}",
-                use_container_width=True,
-            ):
-                st.session_state.selected_album_id = (
-                    row["album_id"]
-                )
-
-                st.rerun()
 
 
 # ============================================================
@@ -915,10 +999,6 @@ def album_detail(album_id):
         [2, 1]
     )
 
-    # --------------------------------------------------------
-    # TRACKS WITH INDIVIDUAL NOTES
-    # --------------------------------------------------------
-
     with left:
         st.header("Tracks")
 
@@ -978,10 +1058,6 @@ def album_detail(album_id):
                     render_track_notes(
                         track
                     )
-
-    # --------------------------------------------------------
-    # USER ALBUM REVIEW
-    # --------------------------------------------------------
 
     with right:
         st.header(
@@ -1074,10 +1150,6 @@ def album_detail(album_id):
                     "Could not save "
                     f"album review: {exc}"
                 )
-
-    # --------------------------------------------------------
-    # COMMUNITY ALBUM REVIEWS
-    # --------------------------------------------------------
 
     st.divider()
 
