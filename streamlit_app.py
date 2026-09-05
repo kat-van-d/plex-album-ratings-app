@@ -2,6 +2,7 @@ import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
 import html
+import textwrap
 
 
 # ============================================================
@@ -109,21 +110,23 @@ def render_artwork(artwork_url, large=False):
         font_size = 64 if large else 48
 
         st.markdown(
-            f"""
-            <div style="
-                aspect-ratio: 1 / 1;
-                width: 100%;
-                background-color: #2b2b2b;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                border-radius: 8px;
-                font-size: {font_size}px;
-                margin-bottom: 0.5rem;
-            ">
-                🎵
-            </div>
-            """,
+            textwrap.dedent(
+                f"""
+                <div style="
+                    aspect-ratio: 1 / 1;
+                    width: 100%;
+                    background-color: #2b2b2b;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    border-radius: 8px;
+                    font-size: {font_size}px;
+                    margin-bottom: 0.5rem;
+                ">
+                    🎵
+                </div>
+                """
+            ),
             unsafe_allow_html=True,
         )
 
@@ -154,8 +157,6 @@ def render_album_card(
         row["album_id"]
     )
 
-    # Fixed-height card shell for better grid alignment.
-    # Artwork is rendered above this text shell.
     render_artwork(
         artwork_url
     )
@@ -190,54 +191,56 @@ def render_album_card(
     )
 
     st.markdown(
-        f"""
-        <div style="
-            min-height: 132px;
-            display: flex;
-            flex-direction: column;
-            justify-content: flex-start;
-            margin-bottom: 0.35rem;
-        ">
+        textwrap.dedent(
+            f"""
             <div style="
-                min-height: 48px;
-                font-weight: 700;
-                line-height: 1.2;
-                font-size: 1rem;
-                margin-bottom: 0.25rem;
+                min-height: 132px;
+                display: flex;
+                flex-direction: column;
+                justify-content: flex-start;
+                margin-bottom: 0.35rem;
             ">
-                {safe_title}
-            </div>
+                <div style="
+                    min-height: 48px;
+                    font-weight: 700;
+                    line-height: 1.2;
+                    font-size: 1rem;
+                    margin-bottom: 0.25rem;
+                ">
+                    {safe_title}
+                </div>
 
-            <div style="
-                min-height: 24px;
-                color: rgba(250,250,250,0.70);
-                font-size: 0.9rem;
-                line-height: 1.2;
-            ">
-                {safe_artist}
-            </div>
+                <div style="
+                    min-height: 24px;
+                    color: rgba(250,250,250,0.70);
+                    font-size: 0.9rem;
+                    line-height: 1.2;
+                ">
+                    {safe_artist}
+                </div>
 
-            <div style="
-                min-height: 22px;
-                color: rgba(250,250,250,0.55);
-                font-size: 0.82rem;
-                line-height: 1.2;
-                margin-top: 0.10rem;
-            ">
-                {year_text}
-            </div>
+                <div style="
+                    min-height: 22px;
+                    color: rgba(250,250,250,0.55);
+                    font-size: 0.82rem;
+                    line-height: 1.2;
+                    margin-top: 0.10rem;
+                ">
+                    {year_text}
+                </div>
 
-            <div style="
-                min-height: 22px;
-                color: rgba(250,250,250,0.65);
-                font-size: 0.82rem;
-                line-height: 1.2;
-                margin-top: 0.25rem;
-            ">
-                {safe_rating}
+                <div style="
+                    min-height: 22px;
+                    color: rgba(250,250,250,0.65);
+                    font-size: 0.82rem;
+                    line-height: 1.2;
+                    margin-top: 0.25rem;
+                ">
+                    {safe_rating}
+                </div>
             </div>
-        </div>
-        """,
+            """
+        ),
         unsafe_allow_html=True,
     )
 
@@ -801,10 +804,6 @@ def album_browser():
             "No albums match the current filters."
         )
         return
-
-    # --------------------------------------------------------
-    # ROW-BY-ROW GRID
-    # --------------------------------------------------------
 
     columns_per_row = 4
 
