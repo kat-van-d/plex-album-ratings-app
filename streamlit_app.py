@@ -1,8 +1,6 @@
 import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
-import html
-import textwrap
 
 
 # ============================================================
@@ -100,35 +98,24 @@ def truncate_text(text, max_chars):
     return text[: max_chars - 1].rstrip() + "…"
 
 
-def render_artwork(artwork_url, large=False):
+def render_artwork(artwork_url):
     if artwork_url:
         st.image(
             artwork_url,
             use_container_width=True,
         )
     else:
-        font_size = 64 if large else 48
-
-        st.markdown(
-            textwrap.dedent(
-                f"""
-                <div style="
-                    aspect-ratio: 1 / 1;
-                    width: 100%;
-                    background-color: #2b2b2b;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    border-radius: 8px;
-                    font-size: {font_size}px;
-                    margin-bottom: 0.5rem;
-                ">
-                    🎵
-                </div>
-                """
-            ),
-            unsafe_allow_html=True,
-        )
+        # Native placeholder with no raw HTML.
+        with st.container(
+            height=220,
+            border=True,
+        ):
+            st.write("")
+            st.write("")
+            st.write("")
+            st.markdown(
+                "### 🎵"
+            )
 
 
 def render_album_card(
@@ -161,88 +148,41 @@ def render_album_card(
         artwork_url
     )
 
-    safe_title = html.escape(
-        truncate_text(title, 42)
-    )
-
-    safe_artist = html.escape(
-        truncate_text(artist, 34)
-    )
-
-    year_text = (
-        html.escape(str(year))
-        if year
-        else "&nbsp;"
-    )
-
-    if (
-        review
-        and review.get("rating") is not None
+    # Fixed-height native container keeps the text area aligned.
+    with st.container(
+        height=170,
+        border=False,
     ):
-        rating_text = (
-            f"Your rating: "
-            f"{review['rating']}/5"
+        st.markdown(
+            f"**{truncate_text(title, 42)}**"
         )
-    else:
-        rating_text = "Not yet rated"
 
-    safe_rating = html.escape(
-        rating_text
-    )
+        st.caption(
+            truncate_text(
+                artist,
+                34,
+            )
+        )
 
-    st.markdown(
-        textwrap.dedent(
-            f"""
-            <div style="
-                min-height: 132px;
-                display: flex;
-                flex-direction: column;
-                justify-content: flex-start;
-                margin-bottom: 0.35rem;
-            ">
-                <div style="
-                    min-height: 48px;
-                    font-weight: 700;
-                    line-height: 1.2;
-                    font-size: 1rem;
-                    margin-bottom: 0.25rem;
-                ">
-                    {safe_title}
-                </div>
+        if year:
+            st.caption(
+                str(year)
+            )
+        else:
+            st.caption(" ")
 
-                <div style="
-                    min-height: 24px;
-                    color: rgba(250,250,250,0.70);
-                    font-size: 0.9rem;
-                    line-height: 1.2;
-                ">
-                    {safe_artist}
-                </div>
-
-                <div style="
-                    min-height: 22px;
-                    color: rgba(250,250,250,0.55);
-                    font-size: 0.82rem;
-                    line-height: 1.2;
-                    margin-top: 0.10rem;
-                ">
-                    {year_text}
-                </div>
-
-                <div style="
-                    min-height: 22px;
-                    color: rgba(250,250,250,0.65);
-                    font-size: 0.82rem;
-                    line-height: 1.2;
-                    margin-top: 0.25rem;
-                ">
-                    {safe_rating}
-                </div>
-            </div>
-            """
-        ),
-        unsafe_allow_html=True,
-    )
+        if (
+            review
+            and review.get("rating") is not None
+        ):
+            st.caption(
+                f"Your rating: "
+                f"{review['rating']}/5"
+            )
+        else:
+            st.caption(
+                "Not yet rated"
+            )
 
     if st.button(
         "Open",
@@ -956,8 +896,7 @@ def album_detail(album_id):
 
     with header_left:
         render_artwork(
-            album.get("artwork_url"),
-            large=True,
+            album.get("artwork_url")
         )
 
     with header_right:
