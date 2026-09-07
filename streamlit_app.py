@@ -1,6 +1,10 @@
 import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
+import requests
+import re
+import unicodedata
+from difflib import SequenceMatcher
 
 
 # ============================================================
@@ -20,6 +24,9 @@ st.set_page_config(
 
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
+LASTFM_API_KEY = st.secrets.get("LASTFM_API_KEY", "")
+
+LASTFM_API_URL = "https://ws.audioscrobbler.com/2.0/"
 
 supabase: Client = create_client(
     SUPABASE_URL,
@@ -39,6 +46,9 @@ def ensure_session():
         "user_email": None,
         "display_name": None,
         "selected_album_id": None,
+        "app_page": "Albums",
+        "lastfm_results": None,
+        "lastfm_results_key": None,
     }
 
     for key, value in defaults.items():
@@ -197,6 +207,158 @@ def render_album_card(
 
 
 # ============================================================
+# LAST.FM HELPERS
+# ============================================================
+
+def normalize_music_name(value):
+    """Normalize artist/album text for conservative catalog matching."""
+    value = unicodedata.normalize("NFKD", value or "")
+    value = "".join(char for char in value if not unicodedata.combining(char))
+    value = value.casefold()
+    value = value.replace("&", " and ")
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return " ".join(value.split())
+
+
+def normalize_album_edition(value):
+    """Remove only clearly edition-related trailing qualifiers."""
+    value = value or ""
+    edition_words = (
+        "remaster|remastered|deluxe|expanded|anniversary|"
+        "bonus|edition|reissue|special edition"
+    )
+    value = re.sub(
+        rf"\s*[\(\[][^\)\]]*(?:{edition_words})[^\)\]]*[\)\]]\s*$",
+        "", value, flags=re.IGNORECASE,
+    )
+    value = re.sub(
+        rf"\s*[-–—:]\s*.*(?:{edition_words}).*$",
+        "", value, flags=re.IGNORECASE,
+    )
+    return normalize_music_name(value)
+
+
+def fetch_lastfm_top_albums(username, period="3month", limit=100):
+    if not LASTFM_API_KEY:
+        raise RuntimeError("LASTFM_API_KEY is not configured in Streamlit secrets.")
+
+    response = requests.get(
+        LASTFM_API_URL,
+        params={
+            "method": "user.gettopalbums",
+            "user": username,
+            "api_key": LASTFM_API_KEY,
+            "format": "json",
+            "period": period,
+            "limit": limit,
+        },
+        timeout=20,
+    )
+    response.raise_for_status()
+    payload = response.json()
+
+    if "error" in payload:
+        raise RuntimeError(payload.get("message") or f"Last.fm API error {payload['error']}")
+
+    albums = payload.get("topalbums", {}).get("album", [])
+    results = []
+    for index, album in enumerate(albums, start=1):
+        artist_data = album.get("artist") or {}
+        results.append({
+            "rank": index,
+            "album": album.get("name") or "Untitled",
+            "artist": artist_data.get("name") or "Unknown artist",
+            "playcount": int(album.get("playcount") or 0),
+            "lastfm_mbid": album.get("mbid") or None,
+            "lastfm_url": album.get("url") or None,
+        })
+    return results
+
+
+def build_plex_album_index(albums):
+    exact_index = {}
+    edition_index = {}
+    by_artist = {}
+    for album in albums:
+        artist_data = relation_one(album.get("artists"))
+        artist = artist_data.get("name") or ""
+        title = album.get("title") or ""
+        artist_key = normalize_music_name(artist)
+        album_key = normalize_music_name(title)
+        edition_key = normalize_album_edition(title)
+        exact_index.setdefault((artist_key, album_key), []).append(album)
+        edition_index.setdefault((artist_key, edition_key), []).append(album)
+        by_artist.setdefault(artist_key, []).append(album)
+    return exact_index, edition_index, by_artist
+
+
+def match_lastfm_album(lastfm_album, indexes):
+    exact_index, edition_index, by_artist = indexes
+    artist_key = normalize_music_name(lastfm_album["artist"])
+    album_key = normalize_music_name(lastfm_album["album"])
+    edition_key = normalize_album_edition(lastfm_album["album"])
+
+    exact = exact_index.get((artist_key, album_key), [])
+    if len(exact) == 1:
+        return exact[0], "Exact"
+
+    edition = edition_index.get((artist_key, edition_key), [])
+    if len(edition) == 1:
+        return edition[0], "Edition-normalized"
+
+    scored = []
+    for candidate in by_artist.get(artist_key, []):
+        candidate_key = normalize_music_name(candidate.get("title") or "")
+        score = SequenceMatcher(None, album_key, candidate_key).ratio()
+        scored.append((score, candidate))
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    if scored and scored[0][0] >= 0.94:
+        runner_up = scored[1][0] if len(scored) > 1 else 0
+        if scored[0][0] - runner_up >= 0.03:
+            return scored[0][1], "High-confidence fuzzy"
+
+    return None, None
+
+
+def compare_lastfm_to_plex(lastfm_albums, plex_albums):
+    indexes = build_plex_album_index(plex_albums)
+    compared = []
+    for item in lastfm_albums:
+        match, match_method = match_lastfm_album(item, indexes)
+        compared.append({
+            **item,
+            "in_plex": match is not None,
+            "plex_album_id": match.get("album_id") if match else None,
+            "plex_album_title": match.get("title") if match else None,
+            "match_method": match_method,
+        })
+    return compared
+
+
+def get_my_profile():
+    response = (
+        supabase.table("profiles")
+        .select("display_name,lastfm_username")
+        .eq("user_id", st.session_state.user_id)
+        .limit(1)
+        .execute()
+    )
+    return response.data[0] if response.data else {}
+
+
+def save_lastfm_username(username):
+    (
+        supabase.table("profiles")
+        .update({"lastfm_username": username or None})
+        .eq("user_id", st.session_state.user_id)
+        .execute()
+    )
+    st.session_state.lastfm_results = None
+    st.session_state.lastfm_results_key = None
+
+
+# ============================================================
 # AUTHENTICATION
 # ============================================================
 
@@ -255,7 +417,7 @@ def login_page():
                 profile_response = (
                     supabase
                     .table("profiles")
-                    .select("display_name")
+                    .select("display_name,lastfm_username")
                     .eq(
                         "user_id",
                         response.user.id,
@@ -369,6 +531,7 @@ def get_all_albums():
                 "studio,"
                 "summary,"
                 "artwork_url,"
+                "musicbrainz_release_group_id,"
                 "artist_id,"
                 "artists(name)"
             )
@@ -561,27 +724,26 @@ def get_community_track_notes(track_id):
 # SIDEBAR
 # ============================================================
 
-def sidebar_filters(albums):
+def render_sidebar_identity():
     with st.sidebar:
         st.header("Music Library")
-
         user_label = (
             st.session_state.display_name
             or st.session_state.user_email
             or "Signed-in user"
         )
-
-        st.caption(
-            f"Signed in as {user_label}"
-        )
-
-        if st.button(
-            "Sign out",
-            use_container_width=True,
-        ):
+        st.caption(f"Signed in as {user_label}")
+        if st.button("Sign out", use_container_width=True, key="sidebar_sign_out"):
             sign_out()
-
         st.divider()
+        st.radio("View", ["Albums", "My Last.fm"], key="app_page")
+        st.divider()
+
+
+def sidebar_filters(albums):
+    render_sidebar_identity()
+
+    with st.sidebar:
 
         search = st.text_input(
             "Search albums or artists"
@@ -771,6 +933,144 @@ def album_browser():
                     row,
                     reviewed_by_album,
                 )
+
+
+# ============================================================
+# LAST.FM PAGE
+# ============================================================
+
+def lastfm_page():
+    set_supabase_session()
+    render_sidebar_identity()
+
+    st.title("My Last.fm")
+    st.write(
+        "Compare your most-played Last.fm albums with the albums "
+        "currently in the Plex library."
+    )
+
+    profile = get_my_profile()
+    saved_username = profile.get("lastfm_username") or ""
+
+    with st.container(border=True):
+        st.subheader("Last.fm account")
+        with st.form("lastfm_username_form"):
+            username = st.text_input(
+                "Last.fm username",
+                value=saved_username,
+                help=(
+                    "Only your public Last.fm username is stored. "
+                    "Your Last.fm password is never requested."
+                ),
+            )
+            save_username = st.form_submit_button("Save username")
+
+        if save_username:
+            try:
+                save_lastfm_username(username.strip())
+                st.success("Last.fm username saved.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not save Last.fm username: {exc}")
+
+    if not saved_username:
+        st.info("Save your Last.fm username above to analyze your top albums.")
+        return
+
+    st.subheader("Top albums")
+    period_labels = {
+        "Last 7 days": "7day",
+        "Last month": "1month",
+        "Last 3 months": "3month",
+        "Last 6 months": "6month",
+        "Last 12 months": "12month",
+        "Overall": "overall",
+    }
+
+    controls_left, controls_right = st.columns(2)
+    with controls_left:
+        period_label = st.selectbox(
+            "Listening period", list(period_labels.keys()), index=2
+        )
+    with controls_right:
+        limit = st.selectbox(
+            "Albums to analyze", [25, 50, 100, 200], index=2
+        )
+
+    period = period_labels[period_label]
+    results_key = (saved_username, period, limit)
+    refresh = st.button("Refresh from Last.fm", type="primary")
+
+    if refresh or st.session_state.lastfm_results_key != results_key:
+        try:
+            with st.spinner("Getting your top albums from Last.fm..."):
+                lastfm_albums = fetch_lastfm_top_albums(
+                    saved_username, period=period, limit=limit
+                )
+                plex_albums = get_all_albums()
+                compared = compare_lastfm_to_plex(lastfm_albums, plex_albums)
+            st.session_state.lastfm_results = compared
+            st.session_state.lastfm_results_key = results_key
+        except Exception as exc:
+            st.error(f"Could not retrieve Last.fm data: {exc}")
+            return
+
+    compared = st.session_state.lastfm_results or []
+    if not compared:
+        st.info("Last.fm returned no top albums for this period.")
+        return
+
+    in_plex_count = sum(1 for row in compared if row["in_plex"])
+    missing_count = len(compared) - in_plex_count
+    metric1, metric2, metric3 = st.columns(3)
+    metric1.metric("Top albums", len(compared))
+    metric2.metric("In Plex", in_plex_count)
+    metric3.metric("Missing from Plex", missing_count)
+
+    status_filter = st.segmented_control(
+        "Show",
+        options=["All", "In Plex", "Missing from Plex"],
+        default="All",
+    )
+
+    if status_filter == "In Plex":
+        visible = [row for row in compared if row["in_plex"]]
+    elif status_filter == "Missing from Plex":
+        visible = [row for row in compared if not row["in_plex"]]
+    else:
+        visible = compared
+
+    st.caption(
+        f"{len(visible):,} albums shown • matching uses artist and album-title normalization"
+    )
+
+    if not visible:
+        st.info("No albums match this view.")
+        return
+
+    for row in visible:
+        with st.container(border=True):
+            rank_col, info_col, status_col = st.columns([0.5, 4, 1.4])
+            with rank_col:
+                st.markdown(f"### #{row['rank']}")
+            with info_col:
+                st.markdown(f"**{row['album']}**")
+                st.caption(f"{row['artist']} • {row['playcount']:,} plays")
+            with status_col:
+                if row["in_plex"]:
+                    st.success("In Plex")
+                    if row.get("match_method"):
+                        st.caption(row["match_method"])
+                    if st.button(
+                        "Open album",
+                        key=f"lastfm_open_{row['rank']}_{row['plex_album_id']}",
+                        use_container_width=True,
+                    ):
+                        st.session_state.selected_album_id = row["plex_album_id"]
+                        st.session_state.app_page = "Albums"
+                        st.rerun()
+                else:
+                    st.warning("Missing")
 
 
 # ============================================================
@@ -1161,6 +1461,9 @@ else:
         album_detail(
             st.session_state.selected_album_id
         )
+
+    elif st.session_state.app_page == "My Last.fm":
+        lastfm_page()
 
     else:
         album_browser()
