@@ -215,6 +215,7 @@ def render_album_list_row(
     artist = artist_data.get("name") or "Unknown artist"
     title = row.get("title") or "Untitled"
     year = row.get("year")
+    genre = (row.get("genre") or "").strip()
     review = reviewed_by_album.get(row["album_id"])
 
     with st.container(border=True):
@@ -232,6 +233,8 @@ def render_album_list_row(
             metadata = [artist]
             if year:
                 metadata.append(str(year))
+            if genre:
+                metadata.append(genre)
             st.caption(" • ".join(metadata))
 
             if review and review.get("rating") is not None:
@@ -574,6 +577,7 @@ def get_all_albums():
                 "album_id,"
                 "title,"
                 "year,"
+                "genre,"
                 "studio,"
                 "summary,"
                 "artwork_url,"
@@ -626,6 +630,7 @@ def get_album_detail(album_id):
             "album_id,"
             "title,"
             "year,"
+            "genre,"
             "studio,"
             "summary,"
             "artwork_url,"
@@ -940,7 +945,7 @@ def render_sidebar_identity():
         if st.button("Sign out", use_container_width=True, key="sidebar_sign_out"):
             sign_out()
         st.divider()
-        st.radio("View", ["Albums", "Notes", "Top Rated", "Last.fm Audit"], key="app_page")
+        st.radio("View", ["Albums", "Notes", "Top Rated", "My Last.fm"], key="app_page")
         st.divider()
 
 
@@ -985,7 +990,7 @@ def sidebar_filters(albums):
 
         display_choice = st.radio(
             "Display",
-            ["Grid", "List"],
+            ["List", "Grid"],
             horizontal=True,
             key="album_display_mode",
         )
@@ -1688,7 +1693,7 @@ def lastfm_page():
     set_supabase_session()
     render_sidebar_identity()
 
-    st.title("Last.fm Audit")
+    st.title("My Last.fm")
     st.write(
         "Compare your most-played Last.fm albums with the albums "
         "currently in the Plex library."
@@ -2212,7 +2217,7 @@ else:
     elif st.session_state.app_page == "Top Rated":
         top_rated_page()
 
-    elif st.session_state.app_page == "Last.fm Audit":
+    elif st.session_state.app_page == "My Last.fm":
         lastfm_page()
 
     else:
