@@ -720,6 +720,59 @@ def get_community_track_notes(track_id):
     return response.data or []
 
 
+def get_all_my_album_notes():
+    response = (
+        supabase
+        .table("album_reviews")
+        .select(
+            "review_id,"
+            "album_id,"
+            "rating,"
+            "notes,"
+            "created_at,"
+            "updated_at,"
+            "albums(title,year,artists(name))"
+        )
+        .eq(
+            "user_id",
+            st.session_state.user_id,
+        )
+        .execute()
+    )
+
+    return [
+        row
+        for row in (response.data or [])
+        if (row.get("notes") or "").strip()
+    ]
+
+
+def get_all_my_track_notes():
+    response = (
+        supabase
+        .table("track_notes")
+        .select(
+            "track_note_id,"
+            "track_id,"
+            "notes,"
+            "created_at,"
+            "updated_at,"
+            "tracks(title,track_number,album_id,albums(title,year,artists(name)))"
+        )
+        .eq(
+            "user_id",
+            st.session_state.user_id,
+        )
+        .execute()
+    )
+
+    return [
+        row
+        for row in (response.data or [])
+        if (row.get("notes") or "").strip()
+    ]
+
+
 # ============================================================
 # SIDEBAR
 # ============================================================
@@ -736,7 +789,7 @@ def render_sidebar_identity():
         if st.button("Sign out", use_container_width=True, key="sidebar_sign_out"):
             sign_out()
         st.divider()
-        st.radio("View", ["Albums", "My Last.fm"], key="app_page")
+        st.radio("View", ["Albums", "My Notes", "My Last.fm"], key="app_page")
         st.divider()
 
 
@@ -933,6 +986,173 @@ def album_browser():
                     row,
                     reviewed_by_album,
                 )
+
+
+# ============================================================
+# MY NOTES PAGE
+# ============================================================
+
+def notes_page():
+    set_supabase_session()
+    render_sidebar_identity()
+
+    st.title("My Notes")
+    st.write("Browse all of your album notes and track notes in one place.")
+
+    try:
+        album_notes = get_all_my_album_notes()
+        track_notes = get_all_my_track_notes()
+    except Exception as exc:
+        st.error(f"Could not load your notes: {exc}")
+        return
+
+    rows = []
+
+    for row in album_notes:
+        album = relation_one(row.get("albums"))
+        artist_data = relation_one(album.get("artists"))
+        rows.append({
+            "note_type": "Album note",
+            "album_id": row.get("album_id"),
+            "artist": artist_data.get("name") or "Unknown artist",
+            "album": album.get("title") or "Untitled",
+            "year": album.get("year"),
+            "track": None,
+            "track_number": None,
+            "rating": row.get("rating"),
+            "notes": row.get("notes") or "",
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+        })
+
+    for row in track_notes:
+        track = relation_one(row.get("tracks"))
+        album = relation_one(track.get("albums"))
+        artist_data = relation_one(album.get("artists"))
+        rows.append({
+            "note_type": "Track note",
+            "album_id": track.get("album_id"),
+            "artist": artist_data.get("name") or "Unknown artist",
+            "album": album.get("title") or "Untitled",
+            "year": album.get("year"),
+            "track": track.get("title") or "Untitled track",
+            "track_number": track.get("track_number"),
+            "rating": None,
+            "notes": row.get("notes") or "",
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+        })
+
+    metric1, metric2, metric3 = st.columns(3)
+    metric1.metric("All notes", len(rows))
+    metric2.metric("Album notes", len(album_notes))
+    metric3.metric("Track notes", len(track_notes))
+
+    if not rows:
+        st.info("You have not written any album or track notes yet.")
+        return
+
+    controls_left, controls_middle, controls_right = st.columns([2, 1, 1])
+    with controls_left:
+        search = st.text_input(
+            "Search your notes",
+            placeholder="Search notes, artists, albums, or tracks",
+        ).strip().lower()
+    with controls_middle:
+        note_type = st.selectbox(
+            "Type",
+            ["All", "Album notes", "Track notes"],
+        )
+    with controls_right:
+        sort_choice = st.selectbox(
+            "Sort",
+            ["Recently updated", "Oldest updated", "Artist / Album"],
+        )
+
+    if note_type == "Album notes":
+        visible = [row for row in rows if row["note_type"] == "Album note"]
+    elif note_type == "Track notes":
+        visible = [row for row in rows if row["note_type"] == "Track note"]
+    else:
+        visible = rows.copy()
+
+    if search:
+        def matches_search(row):
+            searchable = " ".join([
+                row.get("artist") or "",
+                row.get("album") or "",
+                row.get("track") or "",
+                row.get("notes") or "",
+            ]).lower()
+            return search in searchable
+
+        visible = [row for row in visible if matches_search(row)]
+
+    if sort_choice == "Recently updated":
+        visible.sort(
+            key=lambda row: row.get("updated_at") or row.get("created_at") or "",
+            reverse=True,
+        )
+    elif sort_choice == "Oldest updated":
+        visible.sort(
+            key=lambda row: row.get("updated_at") or row.get("created_at") or "",
+        )
+    else:
+        visible.sort(key=lambda row: (
+            (row.get("artist") or "").lower(),
+            (row.get("album") or "").lower(),
+            row.get("track_number") if row.get("track_number") is not None else 9999,
+            (row.get("track") or "").lower(),
+        ))
+
+    st.caption(f"{len(visible):,} notes shown")
+
+    if not visible:
+        st.info("No notes match the current filters.")
+        return
+
+    for index, row in enumerate(visible):
+        with st.container(border=True):
+            info_col, action_col = st.columns([5, 1])
+
+            with info_col:
+                heading_parts = [row["artist"], row["album"]]
+                if row.get("year"):
+                    heading_parts.append(str(row["year"]))
+                st.markdown(f"**{' — '.join(heading_parts)}**")
+
+                if row["note_type"] == "Track note":
+                    track_label = row.get("track") or "Untitled track"
+                    if row.get("track_number") is not None:
+                        track_label = f"{row['track_number']}. {track_label}"
+                    st.caption(f"Track note • {track_label}")
+                else:
+                    rating = row.get("rating")
+                    if rating is not None:
+                        st.caption(f"Album note • Rating: {rating}/5")
+                    else:
+                        st.caption("Album note")
+
+                st.write(row["notes"])
+
+                timestamp = row.get("updated_at") or row.get("created_at")
+                if timestamp:
+                    try:
+                        formatted = pd.to_datetime(timestamp).strftime("%b %d, %Y")
+                    except Exception:
+                        formatted = str(timestamp)
+                    st.caption(f"Last updated: {formatted}")
+
+            with action_col:
+                album_id = row.get("album_id")
+                if album_id and st.button(
+                    "Open album",
+                    key=f"notes_open_{index}_{album_id}_{row['note_type']}",
+                    use_container_width=True,
+                ):
+                    st.session_state.selected_album_id = album_id
+                    st.session_state.app_page = "Albums"
+                    st.rerun()
 
 
 # ============================================================
@@ -1461,6 +1681,9 @@ else:
         album_detail(
             st.session_state.selected_album_id
         )
+
+    elif st.session_state.app_page == "My Notes":
+        notes_page()
 
     elif st.session_state.app_page == "My Last.fm":
         lastfm_page()
