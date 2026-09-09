@@ -773,6 +773,111 @@ def get_all_my_track_notes():
     ]
 
 
+def get_all_community_album_notes():
+    """Return all non-empty album notes visible to the signed-in user."""
+    all_rows = []
+    page_size = 1000
+    start = 0
+
+    while True:
+        response = (
+            supabase
+            .table("album_reviews")
+            .select(
+                "review_id,"
+                "album_id,"
+                "user_id,"
+                "rating,"
+                "notes,"
+                "created_at,"
+                "updated_at,"
+                "profiles(display_name),"
+                "albums(title,year,artwork_url,artists(name))"
+            )
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+        batch = response.data or []
+        all_rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        start += page_size
+
+    return [
+        row for row in all_rows
+        if (row.get("notes") or "").strip()
+    ]
+
+
+def get_all_community_track_notes():
+    """Return all non-empty track notes visible to the signed-in user."""
+    all_rows = []
+    page_size = 1000
+    start = 0
+
+    while True:
+        response = (
+            supabase
+            .table("track_notes")
+            .select(
+                "track_note_id,"
+                "track_id,"
+                "user_id,"
+                "notes,"
+                "created_at,"
+                "updated_at,"
+                "profiles(display_name),"
+                "tracks(title,track_number,album_id,albums(title,year,artwork_url,artists(name)))"
+            )
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+        batch = response.data or []
+        all_rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        start += page_size
+
+    return [
+        row for row in all_rows
+        if (row.get("notes") or "").strip()
+    ]
+
+
+def get_all_album_ratings():
+    """Return all visible album ratings with album and profile metadata."""
+    all_rows = []
+    page_size = 1000
+    start = 0
+
+    while True:
+        response = (
+            supabase
+            .table("album_reviews")
+            .select(
+                "review_id,"
+                "album_id,"
+                "user_id,"
+                "rating,"
+                "updated_at,"
+                "profiles(display_name),"
+                "albums(title,year,artwork_url,artists(name))"
+            )
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+        batch = response.data or []
+        all_rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        start += page_size
+
+    return [
+        row for row in all_rows
+        if row.get("rating") is not None
+    ]
+
+
 # ============================================================
 # SIDEBAR
 # ============================================================
@@ -789,7 +894,7 @@ def render_sidebar_identity():
         if st.button("Sign out", use_container_width=True, key="sidebar_sign_out"):
             sign_out()
         st.divider()
-        st.radio("View", ["Albums", "My Notes", "My Last.fm"], key="app_page")
+        st.radio("View", ["Albums", "Notes", "Top Rated", "My Last.fm"], key="app_page")
         st.divider()
 
 
@@ -989,24 +1094,24 @@ def album_browser():
 
 
 # ============================================================
-# MY NOTES PAGE
+# NOTES PAGE
 # ============================================================
 
 def notes_page():
     set_supabase_session()
     render_sidebar_identity()
 
-    st.title("My Notes")
+    st.title("Notes")
     st.write(
-        "Browse your notes grouped by album, with album notes and "
-        "track notes kept together."
+        "Browse album and track notes grouped by album. View your own notes, "
+        "notes from everyone, or notes from a specific user."
     )
 
     try:
-        album_notes = get_all_my_album_notes()
-        track_notes = get_all_my_track_notes()
+        album_notes = get_all_community_album_notes()
+        track_notes = get_all_community_track_notes()
     except Exception as exc:
-        st.error(f"Could not load your notes: {exc}")
+        st.error(f"Could not load notes: {exc}")
         return
 
     rows = []
@@ -1014,9 +1119,17 @@ def notes_page():
     for row in album_notes:
         album = relation_one(row.get("albums"))
         artist_data = relation_one(album.get("artists"))
+        profile = relation_one(row.get("profiles"))
+        user_id = row.get("user_id")
+        display_name = (
+            profile.get("display_name")
+            or ("You" if user_id == st.session_state.user_id else "User")
+        )
         rows.append({
             "note_type": "Album note",
             "album_id": row.get("album_id"),
+            "user_id": user_id,
+            "display_name": display_name,
             "artist": artist_data.get("name") or "Unknown artist",
             "album": album.get("title") or "Untitled",
             "year": album.get("year"),
@@ -1033,9 +1146,17 @@ def notes_page():
         track = relation_one(row.get("tracks"))
         album = relation_one(track.get("albums"))
         artist_data = relation_one(album.get("artists"))
+        profile = relation_one(row.get("profiles"))
+        user_id = row.get("user_id")
+        display_name = (
+            profile.get("display_name")
+            or ("You" if user_id == st.session_state.user_id else "User")
+        )
         rows.append({
             "note_type": "Track note",
             "album_id": track.get("album_id"),
+            "user_id": user_id,
+            "display_name": display_name,
             "artist": artist_data.get("name") or "Unknown artist",
             "album": album.get("title") or "Untitled",
             "year": album.get("year"),
@@ -1048,49 +1169,85 @@ def notes_page():
             "updated_at": row.get("updated_at"),
         })
 
-    album_ids = {
-        row.get("album_id")
-        for row in rows
-        if row.get("album_id") is not None
-    }
-
-    metric1, metric2, metric3, metric4 = st.columns(4)
-    metric1.metric("Albums with notes", len(album_ids))
-    metric2.metric("All notes", len(rows))
-    metric3.metric("Album notes", len(album_notes))
-    metric4.metric("Track notes", len(track_notes))
-
     if not rows:
-        st.info("You have not written any album or track notes yet.")
+        st.info("No album or track notes have been written yet.")
         return
 
-    controls_left, controls_middle, controls_right = st.columns([2, 1, 1])
-    with controls_left:
+    # Build a stable list of people who actually have notes.
+    people = {}
+    for row in rows:
+        user_id = row.get("user_id")
+        if user_id:
+            people[user_id] = row.get("display_name") or "User"
+
+    sorted_people = sorted(
+        people.items(),
+        key=lambda item: (
+            0 if item[0] == st.session_state.user_id else 1,
+            (item[1] or "").lower(),
+        ),
+    )
+
+    scope_options = ["My notes", "Everyone"]
+    scope_to_user = {}
+    used_labels = set(scope_options)
+
+    for user_id, name in sorted_people:
+        if user_id == st.session_state.user_id:
+            continue
+        label = name
+        if label in used_labels:
+            label = f"{name} ({str(user_id)[:8]})"
+        used_labels.add(label)
+        scope_options.append(label)
+        scope_to_user[label] = user_id
+
+    controls_scope, controls_search, controls_type, controls_sort = st.columns([1.2, 2, 1, 1])
+
+    with controls_scope:
+        scope = st.selectbox("Whose notes", scope_options)
+
+    with controls_search:
         search = st.text_input(
-            "Search your notes",
-            placeholder="Search notes, artists, albums, or tracks",
+            "Search notes",
+            placeholder="Search notes, users, artists, albums, or tracks",
         ).strip().lower()
-    with controls_middle:
+
+    with controls_type:
         note_type = st.selectbox(
             "Type",
             ["All", "Album notes", "Track notes"],
         )
-    with controls_right:
+
+    with controls_sort:
         sort_choice = st.selectbox(
             "Sort albums",
             ["Recently updated", "Oldest updated", "Artist / Album"],
         )
 
-    if note_type == "Album notes":
-        visible = [row for row in rows if row["note_type"] == "Album note"]
-    elif note_type == "Track notes":
-        visible = [row for row in rows if row["note_type"] == "Track note"]
-    else:
+    if scope == "My notes":
+        visible = [
+            row for row in rows
+            if row.get("user_id") == st.session_state.user_id
+        ]
+    elif scope == "Everyone":
         visible = rows.copy()
+    else:
+        selected_user_id = scope_to_user.get(scope)
+        visible = [
+            row for row in rows
+            if row.get("user_id") == selected_user_id
+        ]
+
+    if note_type == "Album notes":
+        visible = [row for row in visible if row["note_type"] == "Album note"]
+    elif note_type == "Track notes":
+        visible = [row for row in visible if row["note_type"] == "Track note"]
 
     if search:
         def matches_search(row):
             searchable = " ".join([
+                row.get("display_name") or "",
                 row.get("artist") or "",
                 row.get("album") or "",
                 row.get("track") or "",
@@ -1099,6 +1256,20 @@ def notes_page():
             return search in searchable
 
         visible = [row for row in visible if matches_search(row)]
+
+    album_ids = {
+        row.get("album_id")
+        for row in visible
+        if row.get("album_id") is not None
+    }
+    album_note_count = sum(row["note_type"] == "Album note" for row in visible)
+    track_note_count = sum(row["note_type"] == "Track note" for row in visible)
+
+    metric1, metric2, metric3, metric4 = st.columns(4)
+    metric1.metric("Albums with notes", len(album_ids))
+    metric2.metric("All notes", len(visible))
+    metric3.metric("Album notes", album_note_count)
+    metric4.metric("Track notes", track_note_count)
 
     if not visible:
         st.info("No notes match the current filters.")
@@ -1126,6 +1297,7 @@ def notes_page():
     for group in album_groups:
         group["notes"].sort(
             key=lambda row: (
+                (row.get("display_name") or "").lower() if scope == "Everyone" else "",
                 0 if row["note_type"] == "Album note" else 1,
                 row.get("track_number") if row.get("track_number") is not None else 9999,
                 (row.get("track") or "").lower(),
@@ -1177,38 +1349,69 @@ def notes_page():
                     metadata.append(str(group["year"]))
                 st.caption(" • ".join(metadata))
 
-                album_note_rows = [
-                    row for row in group["notes"]
-                    if row["note_type"] == "Album note"
-                ]
-                track_note_rows = [
-                    row for row in group["notes"]
-                    if row["note_type"] == "Track note"
-                ]
+                # When viewing everyone, group the notes within an album by user.
+                user_groups = {}
+                for note_row in group["notes"]:
+                    user_key = note_row.get("user_id") or note_row.get("display_name")
+                    if user_key not in user_groups:
+                        user_groups[user_key] = {
+                            "display_name": note_row.get("display_name") or "User",
+                            "rows": [],
+                        }
+                    user_groups[user_key]["rows"].append(note_row)
 
-                if album_note_rows:
-                    album_note = album_note_rows[0]
-                    rating = album_note.get("rating")
-                    label = "Album note"
-                    if rating is not None:
-                        label += f" • Rating: {rating}/5"
-                    st.markdown(f"**{label}**")
-                    st.write(album_note["notes"])
+                user_sections = list(user_groups.values())
+                user_sections.sort(key=lambda section: (
+                    0 if any(
+                        row.get("user_id") == st.session_state.user_id
+                        for row in section["rows"]
+                    ) else 1,
+                    section["display_name"].lower(),
+                ))
 
-                if album_note_rows and track_note_rows:
-                    st.divider()
+                for user_index, section in enumerate(user_sections):
+                    if scope == "Everyone":
+                        name = section["display_name"]
+                        is_me = any(
+                            row.get("user_id") == st.session_state.user_id
+                            for row in section["rows"]
+                        )
+                        if is_me:
+                            name = f"{name} (you)"
+                        st.markdown(f"#### {name}")
 
-                if track_note_rows:
-                    st.markdown(
-                        f"**Track notes ({len(track_note_rows)})**"
-                    )
-                    for track_row in track_note_rows:
-                        track_label = track_row.get("track") or "Untitled track"
-                        if track_row.get("track_number") is not None:
-                            track_label = f"{track_row['track_number']}. {track_label}"
+                    album_note_rows = [
+                        row for row in section["rows"]
+                        if row["note_type"] == "Album note"
+                    ]
+                    track_note_rows = [
+                        row for row in section["rows"]
+                        if row["note_type"] == "Track note"
+                    ]
 
-                        st.caption(track_label)
-                        st.write(track_row["notes"])
+                    if album_note_rows:
+                        album_note = album_note_rows[0]
+                        rating = album_note.get("rating")
+                        label = "Album note"
+                        if rating is not None:
+                            label += f" • Rating: {rating}/5"
+                        st.markdown(f"**{label}**")
+                        st.write(album_note["notes"])
+
+                    if album_note_rows and track_note_rows:
+                        st.markdown("---")
+
+                    if track_note_rows:
+                        st.markdown(f"**Track notes ({len(track_note_rows)})**")
+                        for track_row in track_note_rows:
+                            track_label = track_row.get("track") or "Untitled track"
+                            if track_row.get("track_number") is not None:
+                                track_label = f"{track_row['track_number']}. {track_label}"
+                            st.caption(track_label)
+                            st.write(track_row["notes"])
+
+                    if user_index < len(user_sections) - 1:
+                        st.divider()
 
                 latest = group.get("latest_timestamp")
                 if latest:
@@ -1226,6 +1429,192 @@ def notes_page():
                     use_container_width=True,
                 ):
                     st.session_state.selected_album_id = album_id
+                    st.session_state.app_page = "Albums"
+                    st.rerun()
+
+
+# ============================================================
+# TOP RATED PAGE
+# ============================================================
+
+def top_rated_page():
+    set_supabase_session()
+    render_sidebar_identity()
+
+    st.title("Top Rated")
+    st.write(
+        "See your highest-rated albums or the albums rated highest by the community."
+    )
+
+    try:
+        ratings = get_all_album_ratings()
+    except Exception as exc:
+        st.error(f"Could not load album ratings: {exc}")
+        return
+
+    if not ratings:
+        st.info("No album ratings have been saved yet.")
+        return
+
+    mode_col, min_col, limit_col = st.columns([1.5, 1, 1])
+
+    with mode_col:
+        rating_scope = st.selectbox(
+            "Ratings",
+            ["My ratings", "Community ratings"],
+        )
+
+    with min_col:
+        if rating_scope == "Community ratings":
+            max_ratings = max(
+                1,
+                max(
+                    sum(1 for row in ratings if row.get("album_id") == album_id)
+                    for album_id in {row.get("album_id") for row in ratings}
+                ),
+            )
+            minimum_ratings = st.number_input(
+                "Minimum ratings",
+                min_value=1,
+                max_value=max_ratings,
+                value=1,
+                step=1,
+            )
+        else:
+            minimum_ratings = 1
+            st.caption("Sorted by your rating")
+
+    with limit_col:
+        result_limit = st.selectbox(
+            "Albums to show",
+            [10, 25, 50, 100],
+            index=1,
+        )
+
+    if rating_scope == "My ratings":
+        display_rows = []
+        for row in ratings:
+            if row.get("user_id") != st.session_state.user_id:
+                continue
+            album = relation_one(row.get("albums"))
+            artist_data = relation_one(album.get("artists"))
+            display_rows.append({
+                "album_id": row.get("album_id"),
+                "artist": artist_data.get("name") or "Unknown artist",
+                "album": album.get("title") or "Untitled",
+                "year": album.get("year"),
+                "artwork_url": album.get("artwork_url"),
+                "rating": float(row.get("rating")),
+                "rating_count": 1,
+                "updated_at": row.get("updated_at") or "",
+            })
+
+        display_rows.sort(key=lambda row: (
+            -row["rating"],
+            (row.get("artist") or "").lower(),
+            (row.get("album") or "").lower(),
+        ))
+
+        if not display_rows:
+            st.info("You have not rated any albums yet.")
+            return
+
+        average = sum(row["rating"] for row in display_rows) / len(display_rows)
+        metric1, metric2 = st.columns(2)
+        metric1.metric("Albums you've rated", len(display_rows))
+        metric2.metric("Your average rating", f"{average:.2f}/5")
+
+    else:
+        grouped = {}
+        for row in ratings:
+            album_id = row.get("album_id")
+            if album_id is None:
+                continue
+            if album_id not in grouped:
+                album = relation_one(row.get("albums"))
+                artist_data = relation_one(album.get("artists"))
+                grouped[album_id] = {
+                    "album_id": album_id,
+                    "artist": artist_data.get("name") or "Unknown artist",
+                    "album": album.get("title") or "Untitled",
+                    "year": album.get("year"),
+                    "artwork_url": album.get("artwork_url"),
+                    "ratings": [],
+                    "my_rating": None,
+                }
+            numeric_rating = float(row.get("rating"))
+            grouped[album_id]["ratings"].append(numeric_rating)
+            if row.get("user_id") == st.session_state.user_id:
+                grouped[album_id]["my_rating"] = numeric_rating
+
+        display_rows = []
+        for group in grouped.values():
+            count = len(group["ratings"])
+            if count < minimum_ratings:
+                continue
+            group["rating_count"] = count
+            group["rating"] = sum(group["ratings"]) / count
+            display_rows.append(group)
+
+        display_rows.sort(key=lambda row: (
+            -row["rating"],
+            -row["rating_count"],
+            (row.get("artist") or "").lower(),
+            (row.get("album") or "").lower(),
+        ))
+
+        if not display_rows:
+            st.info("No albums meet the selected minimum number of ratings.")
+            return
+
+        all_ratings = [float(row.get("rating")) for row in ratings]
+        community_average = sum(all_ratings) / len(all_ratings)
+        metric1, metric2, metric3 = st.columns(3)
+        metric1.metric("Albums rated", len(grouped))
+        metric2.metric("Ratings submitted", len(ratings))
+        metric3.metric("Community average", f"{community_average:.2f}/5")
+
+    display_rows = display_rows[:result_limit]
+    st.caption(f"Showing {len(display_rows):,} albums")
+
+    for rank, row in enumerate(display_rows, start=1):
+        with st.container(border=True):
+            artwork_col, content_col, action_col = st.columns([1, 5, 1])
+
+            with artwork_col:
+                if row.get("artwork_url"):
+                    st.image(row["artwork_url"], use_container_width=True)
+                else:
+                    with st.container(height=105, border=True):
+                        st.write("")
+                        st.markdown("### 🎵")
+
+            with content_col:
+                st.subheader(f"#{rank} — {row['album']}")
+                metadata = [row["artist"]]
+                if row.get("year"):
+                    metadata.append(str(row["year"]))
+                st.caption(" • ".join(metadata))
+
+                if rating_scope == "My ratings":
+                    st.markdown(f"**Your rating: {row['rating']:g}/5**")
+                else:
+                    count = row["rating_count"]
+                    rating_word = "rating" if count == 1 else "ratings"
+                    st.markdown(
+                        f"**Community rating: {row['rating']:.2f}/5** "
+                        f"• {count} {rating_word}"
+                    )
+                    if row.get("my_rating") is not None:
+                        st.caption(f"Your rating: {row['my_rating']:g}/5")
+
+            with action_col:
+                if st.button(
+                    "Open album",
+                    key=f"top_rated_open_{rating_scope}_{rank}_{row['album_id']}",
+                    use_container_width=True,
+                ):
+                    st.session_state.selected_album_id = row["album_id"]
                     st.session_state.app_page = "Albums"
                     st.rerun()
 
@@ -1757,8 +2146,11 @@ else:
             st.session_state.selected_album_id
         )
 
-    elif st.session_state.app_page == "My Notes":
+    elif st.session_state.app_page == "Notes":
         notes_page()
+
+    elif st.session_state.app_page == "Top Rated":
+        top_rated_page()
 
     elif st.session_state.app_page == "My Last.fm":
         lastfm_page()
