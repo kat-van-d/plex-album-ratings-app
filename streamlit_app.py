@@ -206,6 +206,52 @@ def render_album_card(
         st.rerun()
 
 
+def render_album_list_row(
+    row,
+    reviewed_by_album,
+):
+    artwork_url = row.get("artwork_url")
+    artist_data = relation_one(row.get("artists"))
+    artist = artist_data.get("name") or "Unknown artist"
+    title = row.get("title") or "Untitled"
+    year = row.get("year")
+    review = reviewed_by_album.get(row["album_id"])
+
+    with st.container(border=True):
+        image_col, info_col, action_col = st.columns([1, 4, 1.2], vertical_alignment="center")
+
+        with image_col:
+            if artwork_url:
+                st.image(artwork_url, use_container_width=True)
+            else:
+                with st.container(height=100, border=True):
+                    st.markdown("### 🎵")
+
+        with info_col:
+            st.markdown(f"### {title}")
+            metadata = [artist]
+            if year:
+                metadata.append(str(year))
+            st.caption(" • ".join(metadata))
+
+            if review and review.get("rating") is not None:
+                st.write(f"Your rating: **{review['rating']}/5**")
+            else:
+                st.caption("Not yet rated")
+
+            if review and (review.get("notes") or "").strip():
+                st.caption(truncate_text(review.get("notes") or "", 180))
+
+        with action_col:
+            if st.button(
+                "Open album",
+                key=f"open_list_{row['album_id']}",
+                use_container_width=True,
+            ):
+                st.session_state.selected_album_id = row["album_id"]
+                st.rerun()
+
+
 # ============================================================
 # LAST.FM HELPERS
 # ============================================================
@@ -894,7 +940,7 @@ def render_sidebar_identity():
         if st.button("Sign out", use_container_width=True, key="sidebar_sign_out"):
             sign_out()
         st.divider()
-        st.radio("View", ["Albums", "Notes", "Top Rated", "My Last.fm"], key="app_page")
+        st.radio("View", ["Albums", "Notes", "Top Rated", "Last.fm Audit"], key="app_page")
         st.divider()
 
 
@@ -937,11 +983,19 @@ def sidebar_filters(albums):
             "Only albums I haven't rated"
         )
 
+        display_choice = st.radio(
+            "Display",
+            ["Grid", "List"],
+            horizontal=True,
+            key="album_display_mode",
+        )
+
     return (
         search.strip(),
         year_choice,
         sort_choice,
         only_unrated,
+        display_choice,
     )
 
 
@@ -959,6 +1013,7 @@ def album_browser():
         year_choice,
         sort_choice,
         only_unrated,
+        display_choice,
     ) = sidebar_filters(albums)
 
     st.title("Albums")
@@ -1063,6 +1118,14 @@ def album_browser():
         st.info(
             "No albums match the current filters."
         )
+        return
+
+    if display_choice == "List":
+        for row in rows:
+            render_album_list_row(
+                row,
+                reviewed_by_album,
+            )
         return
 
     columns_per_row = 4
@@ -1429,7 +1492,6 @@ def notes_page():
                     use_container_width=True,
                 ):
                     st.session_state.selected_album_id = album_id
-                    st.session_state.app_page = "Albums"
                     st.rerun()
 
 
@@ -1615,7 +1677,6 @@ def top_rated_page():
                     use_container_width=True,
                 ):
                     st.session_state.selected_album_id = row["album_id"]
-                    st.session_state.app_page = "Albums"
                     st.rerun()
 
 
@@ -1627,7 +1688,7 @@ def lastfm_page():
     set_supabase_session()
     render_sidebar_identity()
 
-    st.title("My Last.fm")
+    st.title("Last.fm Audit")
     st.write(
         "Compare your most-played Last.fm albums with the albums "
         "currently in the Plex library."
@@ -1751,7 +1812,6 @@ def lastfm_page():
                         use_container_width=True,
                     ):
                         st.session_state.selected_album_id = row["plex_album_id"]
-                        st.session_state.app_page = "Albums"
                         st.rerun()
                 else:
                     st.warning("Missing")
@@ -2152,7 +2212,7 @@ else:
     elif st.session_state.app_page == "Top Rated":
         top_rated_page()
 
-    elif st.session_state.app_page == "My Last.fm":
+    elif st.session_state.app_page == "Last.fm Audit":
         lastfm_page()
 
     else:
