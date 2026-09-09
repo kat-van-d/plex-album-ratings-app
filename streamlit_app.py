@@ -731,7 +731,7 @@ def get_all_my_album_notes():
             "notes,"
             "created_at,"
             "updated_at,"
-            "albums(title,year,artists(name))"
+            "albums(title,year,artwork_url,artists(name))"
         )
         .eq(
             "user_id",
@@ -757,7 +757,7 @@ def get_all_my_track_notes():
             "notes,"
             "created_at,"
             "updated_at,"
-            "tracks(title,track_number,album_id,albums(title,year,artists(name)))"
+            "tracks(title,track_number,album_id,albums(title,year,artwork_url,artists(name)))"
         )
         .eq(
             "user_id",
@@ -997,7 +997,10 @@ def notes_page():
     render_sidebar_identity()
 
     st.title("My Notes")
-    st.write("Browse all of your album notes and track notes in one place.")
+    st.write(
+        "Browse your notes grouped by album, with album notes and "
+        "track notes kept together."
+    )
 
     try:
         album_notes = get_all_my_album_notes()
@@ -1017,6 +1020,7 @@ def notes_page():
             "artist": artist_data.get("name") or "Unknown artist",
             "album": album.get("title") or "Untitled",
             "year": album.get("year"),
+            "artwork_url": album.get("artwork_url"),
             "track": None,
             "track_number": None,
             "rating": row.get("rating"),
@@ -1035,6 +1039,7 @@ def notes_page():
             "artist": artist_data.get("name") or "Unknown artist",
             "album": album.get("title") or "Untitled",
             "year": album.get("year"),
+            "artwork_url": album.get("artwork_url"),
             "track": track.get("title") or "Untitled track",
             "track_number": track.get("track_number"),
             "rating": None,
@@ -1043,10 +1048,17 @@ def notes_page():
             "updated_at": row.get("updated_at"),
         })
 
-    metric1, metric2, metric3 = st.columns(3)
-    metric1.metric("All notes", len(rows))
-    metric2.metric("Album notes", len(album_notes))
-    metric3.metric("Track notes", len(track_notes))
+    album_ids = {
+        row.get("album_id")
+        for row in rows
+        if row.get("album_id") is not None
+    }
+
+    metric1, metric2, metric3, metric4 = st.columns(4)
+    metric1.metric("Albums with notes", len(album_ids))
+    metric2.metric("All notes", len(rows))
+    metric3.metric("Album notes", len(album_notes))
+    metric4.metric("Track notes", len(track_notes))
 
     if not rows:
         st.info("You have not written any album or track notes yet.")
@@ -1065,7 +1077,7 @@ def notes_page():
         )
     with controls_right:
         sort_choice = st.selectbox(
-            "Sort",
+            "Sort albums",
             ["Recently updated", "Oldest updated", "Artist / Album"],
         )
 
@@ -1088,66 +1100,129 @@ def notes_page():
 
         visible = [row for row in visible if matches_search(row)]
 
-    if sort_choice == "Recently updated":
-        visible.sort(
-            key=lambda row: row.get("updated_at") or row.get("created_at") or "",
-            reverse=True,
-        )
-    elif sort_choice == "Oldest updated":
-        visible.sort(
-            key=lambda row: row.get("updated_at") or row.get("created_at") or "",
-        )
-    else:
-        visible.sort(key=lambda row: (
-            (row.get("artist") or "").lower(),
-            (row.get("album") or "").lower(),
-            row.get("track_number") if row.get("track_number") is not None else 9999,
-            (row.get("track") or "").lower(),
-        ))
-
-    st.caption(f"{len(visible):,} notes shown")
-
     if not visible:
         st.info("No notes match the current filters.")
         return
 
-    for index, row in enumerate(visible):
+    grouped = {}
+    for row in visible:
+        album_id = row.get("album_id")
+        group_key = album_id if album_id is not None else (
+            row.get("artist"), row.get("album"), row.get("year")
+        )
+        if group_key not in grouped:
+            grouped[group_key] = {
+                "album_id": album_id,
+                "artist": row.get("artist") or "Unknown artist",
+                "album": row.get("album") or "Untitled",
+                "year": row.get("year"),
+                "artwork_url": row.get("artwork_url"),
+                "notes": [],
+            }
+        grouped[group_key]["notes"].append(row)
+
+    album_groups = list(grouped.values())
+
+    for group in album_groups:
+        group["notes"].sort(
+            key=lambda row: (
+                0 if row["note_type"] == "Album note" else 1,
+                row.get("track_number") if row.get("track_number") is not None else 9999,
+                (row.get("track") or "").lower(),
+            )
+        )
+        timestamps = [
+            row.get("updated_at") or row.get("created_at") or ""
+            for row in group["notes"]
+        ]
+        group["latest_timestamp"] = max(timestamps) if timestamps else ""
+        group["oldest_timestamp"] = min(timestamps) if timestamps else ""
+
+    if sort_choice == "Recently updated":
+        album_groups.sort(
+            key=lambda group: group.get("latest_timestamp") or "",
+            reverse=True,
+        )
+    elif sort_choice == "Oldest updated":
+        album_groups.sort(
+            key=lambda group: group.get("oldest_timestamp") or "",
+        )
+    else:
+        album_groups.sort(key=lambda group: (
+            (group.get("artist") or "").lower(),
+            (group.get("album") or "").lower(),
+        ))
+
+    st.caption(
+        f"{len(visible):,} notes across {len(album_groups):,} albums shown"
+    )
+
+    for group_index, group in enumerate(album_groups):
         with st.container(border=True):
-            info_col, action_col = st.columns([5, 1])
+            artwork_col, content_col, action_col = st.columns([1, 5, 1])
 
-            with info_col:
-                heading_parts = [row["artist"], row["album"]]
-                if row.get("year"):
-                    heading_parts.append(str(row["year"]))
-                st.markdown(f"**{' — '.join(heading_parts)}**")
-
-                if row["note_type"] == "Track note":
-                    track_label = row.get("track") or "Untitled track"
-                    if row.get("track_number") is not None:
-                        track_label = f"{row['track_number']}. {track_label}"
-                    st.caption(f"Track note • {track_label}")
+            with artwork_col:
+                artwork_url = group.get("artwork_url")
+                if artwork_url:
+                    st.image(artwork_url, use_container_width=True)
                 else:
-                    rating = row.get("rating")
+                    with st.container(height=105, border=True):
+                        st.write("")
+                        st.markdown("### 🎵")
+
+            with content_col:
+                st.subheader(group["album"])
+                metadata = [group["artist"]]
+                if group.get("year"):
+                    metadata.append(str(group["year"]))
+                st.caption(" • ".join(metadata))
+
+                album_note_rows = [
+                    row for row in group["notes"]
+                    if row["note_type"] == "Album note"
+                ]
+                track_note_rows = [
+                    row for row in group["notes"]
+                    if row["note_type"] == "Track note"
+                ]
+
+                if album_note_rows:
+                    album_note = album_note_rows[0]
+                    rating = album_note.get("rating")
+                    label = "Album note"
                     if rating is not None:
-                        st.caption(f"Album note • Rating: {rating}/5")
-                    else:
-                        st.caption("Album note")
+                        label += f" • Rating: {rating}/5"
+                    st.markdown(f"**{label}**")
+                    st.write(album_note["notes"])
 
-                st.write(row["notes"])
+                if album_note_rows and track_note_rows:
+                    st.divider()
 
-                timestamp = row.get("updated_at") or row.get("created_at")
-                if timestamp:
+                if track_note_rows:
+                    st.markdown(
+                        f"**Track notes ({len(track_note_rows)})**"
+                    )
+                    for track_row in track_note_rows:
+                        track_label = track_row.get("track") or "Untitled track"
+                        if track_row.get("track_number") is not None:
+                            track_label = f"{track_row['track_number']}. {track_label}"
+
+                        st.caption(track_label)
+                        st.write(track_row["notes"])
+
+                latest = group.get("latest_timestamp")
+                if latest:
                     try:
-                        formatted = pd.to_datetime(timestamp).strftime("%b %d, %Y")
+                        formatted = pd.to_datetime(latest).strftime("%b %d, %Y")
                     except Exception:
-                        formatted = str(timestamp)
-                    st.caption(f"Last updated: {formatted}")
+                        formatted = str(latest)
+                    st.caption(f"Most recently updated: {formatted}")
 
             with action_col:
-                album_id = row.get("album_id")
+                album_id = group.get("album_id")
                 if album_id and st.button(
                     "Open album",
-                    key=f"notes_open_{index}_{album_id}_{row['note_type']}",
+                    key=f"notes_group_open_{group_index}_{album_id}",
                     use_container_width=True,
                 ):
                     st.session_state.selected_album_id = album_id
